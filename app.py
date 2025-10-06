@@ -1,31 +1,54 @@
 import os
 import gradio as gr
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
+from youtube_transcript_api.proxies import WebshareProxyConfig
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnableParallel, RunnablePassthrough, RunnableLambda
 from langchain_core.output_parsers import StrOutputParser
+from urllib.parse import urlparse, parse_qs
 
 # Global variables to store state
 vector_store = None
 transcript_text = None
 video_id_global = None
 
-def extract_video_id(url_or_id):
-    """Extract video ID from URL or return if already an ID"""
+
+def extract_video_id(url_or_id: str) -> str:
+    """Extract the YouTube video ID from a URL or return the ID if it's already in the correct format."""
     if "youtube.com" in url_or_id or "youtu.be" in url_or_id:
-        if "v=" in url_or_id:
-            return url_or_id.split("v=")[1].split("&")[0]
-        elif "youtu.be/" in url_or_id:
-            return url_or_id.split("youtu.be/")[1].split("?")[0]
+        parsed_url = urlparse(url_or_id)
+        # Handle standard watch URLs
+        if parsed_url.hostname and "youtube" in parsed_url.hostname:
+            query = parse_qs(parsed_url.query)
+            if "v" in query:
+                return query["v"][0]
+        # Handle youtu.be short links
+        if parsed_url.hostname and "youtu.be" in parsed_url.hostname:
+            return parsed_url.path.lstrip("/")
     return url_or_id
 
+
 def get_transcript(video_id):
-    """Fetch transcript from YouTube"""
+    """Fetch transcript from YouTube
+       Proxies: Unfortunately, YouTube has started blocking most IPs that are known
+       belong to cloud providers, which means you will most likely run into
+       RequestBlocked or IpBlocked exceptions when deploying your code to any cloud platforms.
+       To prevent this proxy has been set up.
+       Be aware that using a proxy doesn't guarantee that you won't be blocked,
+       as YouTube can always block the IP of your proxy!
+       Therefore, you should always choose a solution that rotates through a pool of proxy addresses,
+       if you want to maximize reliability. Although it's not being used here, you have to purchase Residential Proxy package.
+    """
     try:
-        transcript_snippets = YouTubeTranscriptApi().fetch(video_id, languages=['en'])
+        transcript_snippets = YouTubeTranscriptApi(
+            proxy_config = WebshareProxyConfig(
+                proxy_username = "zvvcdjca",
+                proxy_password = "rtgzzncfso2s",
+            )
+        ).fetch(video_id, languages=['en'])
         text = " ".join(snippet.text for snippet in transcript_snippets)
         return text, None
     except TranscriptsDisabled:
@@ -75,7 +98,7 @@ Stats:
 - Characters: {len(transcript)}
 - Words: {len(transcript.split())}
 - Chunks: {len(chunks)}
-        """
+"""
         
         video_embed = f'<iframe width="100%" height="315" src="https://www.youtube.com/embed/{video_id}" frameborder="0" allowfullscreen></iframe>'
         
@@ -108,11 +131,14 @@ def answer_question(question, api_key, temperature, top_k):
         # Create prompt
         prompt = PromptTemplate(
             template="""You are a helpful assistant.
-Answer ONLY from the provided transcript context.
-If the context is insufficient, just say you don't know.
-Context: {context}
-Question: {question}
-Answer:""",
+                        Answer ONLY from the provided transcript context.
+                        If the context is insufficient, just say you don't know.
+                        
+                        Context: {context}
+                        
+                        Question: {question}
+                        
+                        Answer:""",
             input_variables=['context', 'question']
         )
         
@@ -138,14 +164,6 @@ Answer:""",
     except Exception as e:
         return f"Error: {str(e)}"
 
-def quick_summarize(api_key, temperature, top_k):
-    """Quick summarize button"""
-    return answer_question(
-        "Can you provide a comprehensive summary of this video?",
-        api_key,
-        temperature,
-        top_k
-    )
 
 def quick_key_points(api_key, temperature, top_k):
     """Quick key points button"""
@@ -156,19 +174,46 @@ def quick_key_points(api_key, temperature, top_k):
         top_k
     )
 
-def quick_main_topic(api_key, temperature, top_k):
-    """Quick main topic button"""
-    return answer_question(
-        "What is the main topic of this video?",
-        api_key,
-        temperature,
-        top_k
-    )
 
+# Custom CSS
+custom_css = """
+.gradio-container {
+    font-family: 'Inter', sans-serif;
+}
+.main-header {
+    text-align: center;
+    margin-bottom: 2rem;
+    padding: 2rem;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border-radius: 15px;
+    color: white;
+}
+.instructions-box {
+    background: #fff3cd;
+    border: 1px solid #ffc107;
+    border-radius: 8px;
+    padding: 1rem;
+    margin: 1rem 0;
+}
+"""
 # Create Gradio Interface
-with gr.Blocks(title="YouTube Video Q&A", theme=gr.themes.Soft()) as demo:
-    gr.Markdown("# YouTube Video Summarizer & Q&A")
-    gr.Markdown("Extract transcripts from YouTube videos and ask questions about the content using RAG (Retrieval-Augmented Generation)")
+
+theme = gr.themes.Soft(
+    primary_hue="indigo",
+    secondary_hue="purple",
+    neutral_hue="slate",
+)
+
+with gr.Blocks(title="YouTube Video Q&A with RAG", theme=theme, css=custom_css) as demo:
+    # Header
+    gr.HTML("""
+    <div class="main-header">
+        <h1 style="margin: 0; font-size: 2.5rem; font-weight: 700;">YouTube Video Q&A</h1>
+        <p style="margin: 0.5rem 0 0 0; font-size: 1.1rem; opacity: 0.95;">
+            AI-powered video analysis using Retrieval-Augmented Generation
+        </p>
+    </div>
+    """)
     
     with gr.Row():
         with gr.Column(scale=2):
@@ -209,22 +254,23 @@ with gr.Blocks(title="YouTube Video Q&A", theme=gr.themes.Soft()) as demo:
             with gr.Group():
                 gr.Markdown("### How to use")
                 gr.Markdown("""
-1. Get a Google API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
-2. Enter your API key above
-3. Paste a YouTube video URL or ID
-4. Click 'Process Video'
-5. Ask questions or use quick actions
+                        1. Get a Google API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
+                        2. Enter your API key above
+                        3. Paste a YouTube video URL or ID
+                        4. Click 'Process Video'
+                        5. Ask questions or use quick actions
                 """)
 
             with gr.Group():
                 gr.Markdown("### ℹ️ About")
                 gr.Markdown("""
-This tool uses:
-- **LangChain** for RAG pipeline
-- **FAISS** for vector search
-- **Google Gemini** for AI responses
-- **YouTube Transcript API** for captions
-All processing happens in real-time.
+                        This tool uses:
+                        - **LangChain** for RAG pipeline
+                        - **FAISS** for vector search
+                        - **Google Gemini** for AI responses
+                        - **YouTube Transcript API** for captions
+                        
+                        All processing happens in real-time.
                 """)
     
     gr.Markdown("---")
@@ -234,9 +280,7 @@ All processing happens in real-time.
         gr.Markdown("### Ask Questions")
         
         with gr.Row():
-            summarize_btn = gr.Button("Summarize Video")
             key_points_btn = gr.Button("Key Points")
-            main_topic_btn = gr.Button("Main Topic")
         
         question_input = gr.Textbox(
             label="Your Question",
@@ -273,25 +317,13 @@ All processing happens in real-time.
         outputs=[answer_output]
     )
     
-    summarize_btn.click(
-        fn=quick_summarize,
-        inputs=[api_key_input, temperature, top_k],
-        outputs=[answer_output]
-    )
-    
     key_points_btn.click(
         fn=quick_key_points,
         inputs=[api_key_input, temperature, top_k],
         outputs=[answer_output]
     )
     
-    main_topic_btn.click(
-        fn=quick_main_topic,
-        inputs=[api_key_input, temperature, top_k],
-        outputs=[answer_output]
-    )
 
 # Launch the interface
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 7860))
-    demo.launch(server_name="0.0.0.0", server_port=port)
+    demo.launch()
